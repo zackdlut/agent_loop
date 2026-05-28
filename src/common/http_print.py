@@ -6,9 +6,8 @@ Use with ``anthropic.DefaultHttpxClient`` or any ``httpx.Client``::
     from anthropic import Anthropic, DefaultHttpxClient
     from common.http_print import httpx_print_event_hooks
 
-    client = Anthropic(
-        http_client=DefaultHttpxClient(event_hooks=httpx_print_event_hooks()),
-    )
+    event_hooks = httpx_print_event_hooks()  # stdout
+    event_hooks = httpx_print_event_hooks(file_path="httpx.log")  # file
 
 Response hooks call ``response.read()`` so the body is buffered before the
 SDK consumes it.
@@ -17,6 +16,7 @@ SDK consumes it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import TextIO
 
@@ -76,11 +76,30 @@ def _print_block(title: str, body: str, *, stream: TextIO) -> None:
     print(f"\n{line}\n{title}\n{line}", file=stream)
     print(body.rstrip() if body else "", file=stream)
     print(file=stream)
+    stream.flush()
+
+
+def _append_block_to_file(title: str, body: str, *, file_path: str | os.PathLike[str]) -> None:
+    parent = os.path.dirname(os.fspath(file_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(file_path, "a", encoding="utf-8") as stream:
+        _print_block(title, body, stream=stream)
+
+
+def build_httpx_event_hooks(destination: str | None) -> dict[str, list]:
+    destination = (destination or "").strip()
+    if not destination:
+        return {}
+    if destination.upper() == "STDIO":
+        return httpx_print_event_hooks()
+    return httpx_print_event_hooks(file_path=destination)
 
 
 def httpx_print_event_hooks(
     *,
     stream: TextIO | None = None,
+    file_path: str | os.PathLike[str] | None = None,
     max_body_chars: int = 48_000,
     redact_headers: bool = True,
     sensitive_headers: frozenset[str] | None = None,
@@ -93,6 +112,8 @@ def httpx_print_event_hooks(
     ----------
     stream
         Where to print (default: ``sys.stdout``).
+    file_path
+        Append logs to this file instead of printing to ``stream``.
     max_body_chars
         Truncate request/response bodies after this many characters.
     redact_headers
@@ -102,8 +123,17 @@ def httpx_print_event_hooks(
     pretty_json
         If ``Content-Type`` is JSON, try to pretty-print the body.
     """
+    if stream is not None and file_path is not None:
+        raise ValueError("stream and file_path cannot both be set")
+
     out: TextIO = stream or sys.stdout
     sensitive = _DEFAULT_SENSITIVE | (sensitive_headers or frozenset())
+
+    def write_block(title: str, body: str) -> None:
+        if file_path is not None:
+            _append_block_to_file(title, body, file_path=file_path)
+        else:
+            _print_block(title, body, stream=out)
 
     def on_request(request: httpx.Request) -> None:
         hdrs = _headers_for_print(request.headers, redact=redact_headers, sensitive=sensitive)
@@ -124,7 +154,7 @@ def httpx_print_event_hooks(
             lines.append(preview)
         else:
             lines.append("(empty body)")
-        _print_block("HTTP REQUEST", "\n".join(lines), stream=out)
+        write_block("HTTP REQUEST", "\n".join(lines))
 
     def on_response(response: httpx.Response) -> None:
         response.read()
@@ -144,7 +174,7 @@ def httpx_print_event_hooks(
         if pretty_json and "json" in ct.lower():
             preview = _maybe_pretty_json(preview)
         lines.append(preview)
-        _print_block("HTTP RESPONSE", "\n".join(lines), stream=out)
+        write_block("HTTP RESPONSE", "\n".join(lines))
 
     return {
         "request": [on_request],

@@ -5,7 +5,7 @@ from typing import Any
 from anthropic import Anthropic, DefaultHttpxClient
 from dotenv import load_dotenv
 
-from common.http_print import httpx_print_event_hooks
+from common.http_print import build_httpx_event_hooks
 import os
 import subprocess
 
@@ -13,6 +13,7 @@ load_dotenv(override=True)
 os.environ.setdefault("ANTHROPIC_BASE_URL", "http://10.67.34.44:11434")
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "ollam")
 os.environ.setdefault("ANTHROPIC_MODEL", "qwen3:latest")
+os.environ.setdefault("HTTPX_PRINT_DEST", "httpx.log")
 
 SYSTEM_PROMPT = f"""
 You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain.
@@ -35,7 +36,11 @@ TOOLS = [
     }
 ]
 
-client = Anthropic(http_client=DefaultHttpxClient(event_hooks=httpx_print_event_hooks()))
+client = Anthropic(
+    http_client=DefaultHttpxClient(
+        event_hooks=build_httpx_event_hooks(os.environ.get("HTTPX_PRINT_DEST"))
+    )
+)
 
 
 def check_deny_list(command: str) -> bool:
@@ -93,7 +98,7 @@ def main_loop():
         # handle input messages
         chat_messages.append({"role": "user", "content": user_input})
         repsonse = handle_messages(chat_messages)
-        chat_messages.append({"role": "assistant", "content": repsonse})
+        chat_messages.append({"role": "assistant", "content": repsonse.content})
         if isinstance(repsonse.content, list):
             for block in repsonse.content:
                 if block.type == "text":
