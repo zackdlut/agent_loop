@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-import cmd
+from typing import Any
+
 from anthropic import Anthropic, DefaultHttpxClient
 from dotenv import load_dotenv
 
@@ -47,7 +48,7 @@ def run_bash(command: str) -> str:
         return "Error: Dangerous command blocked"
     # run command
     try:
-        result = subprocess.run(command, shell=True, cmd = os.getcwd() ,capture_output=True, text=True, timeout=60)
+        result = subprocess.run(command, shell=True, cwd=os.getcwd(), capture_output=True, text=True, timeout=60)
         out = (result.stdout + result.stderr).strip()
         return out[:5000] if out else "No output"
     except subprocess.TimeoutExpired as e:
@@ -60,10 +61,10 @@ def handle_messages(messages: list[dict[str, str]]):
     while True:
         response = client.messages.create(
             model=os.environ.get("ANTHROPIC_MODEL"),
+            max_tokens=4096,
             messages=messages,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
-            tool_choice="auto",
         )
         if response.stop_reason != "tool_use":
             return response
@@ -77,9 +78,9 @@ def handle_messages(messages: list[dict[str, str]]):
                 tool_result.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "output": output,
+                    "content": output,
                 })
-        messages.append({"role": "assistant", "content": tool_result})
+        messages.append({"role": "user", "content": tool_result})
 
 def main_loop():
     chat_messages = []
