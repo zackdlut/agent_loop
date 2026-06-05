@@ -352,7 +352,8 @@ def main_loop():
             del chat_messages[turn_start:]
             continue
 
-        chat_messages.append({"role": "assistant", "content": response.content})
+        chat_messages.append(
+            {"role": "assistant", "content": response.content})
         if isinstance(response.content, list):
             for block in response.content:
                 if block.type == "text":
