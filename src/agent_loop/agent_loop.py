@@ -13,8 +13,9 @@ from pathlib import Path
 
 os.environ.setdefault("ANTHROPIC_BASE_URL", "http://10.67.34.44:11434")
 os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", "ollam")
-os.environ.setdefault("ANTHROPIC_MODEL", "qwen3:latest")
+os.environ.setdefault("ANTHROPIC_MODEL", "qwen3.5:9b")
 os.environ.setdefault("HTTPX_PRINT_DEST", "httpx.log")
+#curl http://10.67.34.44:11434/api/tags
 
 load_dotenv(override=True)
 
@@ -39,14 +40,34 @@ def build_system_prompt() -> str:
 Security: the bash tool runs commands with your full OS user privileges in the current working directory ({cwd}). It is not a sandbox. A deny list blocks only a few obviously destructive patterns; do not rely on it for safety. File read/write/glob are restricted to paths under this directory at the time of each call."""
 
 
-# tools
 
+# permission
+
+
+
+PERMISSION_RULES = [
+    {
+        "tools": ["write_file", "edit_file"],
+        "check": lambda args: not (workspace_root() / args["path"]).resolve().is_relative_to(workspace_root()),
+        "reason": "Path escapes workspace",
+    },
+    {
+        "tools": ["bash"],
+        "check": lambda args: any(kw in args["command"] for kw in ["rm", "> /etc/", "chmod 777"]),
+        "reason": "Potentially destructive command",
+    },
+]
+
+def check_rules(tool_name: str, args: dict ) -> str | None:
+    for rule in PERMISSION_RULES:
+        if tool_name in rule["tools"] and rule["check"](args):
+            return rule["reason"]
+    return None
 
 def _normalize_for_deny(command: str) -> str:
     return re.sub(r"\s+", " ", command.strip().lower())
 
-
-def check_deny_list(command: str) -> bool:
+def check_deny_list(command: str) -> str | None:
     """Best-effort blocklist; not a security boundary (see system prompt)."""
     normalized = _normalize_for_deny(command)
     deny_substrings = [
@@ -61,10 +82,6 @@ def check_deny_list(command: str) -> bool:
         "chmod -r /",
         "chmod -r /*",
         "mkfs.",
-    ]
-    if any(s in normalized for s in deny_substrings):
-        return True
-    deny_tokens = [
         "reboot",
         "shutdown",
         "halt",
@@ -74,12 +91,34 @@ def check_deny_list(command: str) -> bool:
         "systemctl poweroff",
         "systemctl reboot",
     ]
-    return any(t in normalized for t in deny_tokens)
+    if any(s in normalized for s in deny_substrings):
+        return f"{command} is blocked on the deny list"
+    return None
+
+def ask_user(tool_name: str, args: dict) -> bool:
+    print(f"Error: {tool_name} {args} is blocked by the permission rules")
+    user_input = input("Do you want to proceed? (y/n): ")
+    return user_input.lower() == "y"
+
+def check_permission(block) -> bool:
+
+    # check if the command is blocked on the deny list
+    if block.name == "bash":
+        reason = check_deny_list(block.input["command"])
+        if reason:
+            print(f"Error: {reason}")
+            return False
+    # check if the command is blocked by the permission rules
+    reason = check_rules(block.name, block.input)
+    if reason:
+        allowed = ask_user(block.name, block.input)
+        if not allowed:
+            return False
+    return True
 
 
+# tools
 def run_bash(command: str) -> str:
-    if check_deny_list(command):
-        return "Error: Dangerous command blocked"
     try:
         result = subprocess.run(
             ["/bin/bash", "-lc", command],
@@ -275,6 +314,9 @@ def handle_messages(messages: list[dict[str, Any]]):
         tool_result = []
         for block in response.content:
             if block.type == "tool_use":
+                if not check_permission(block):
+                    tool_result.append({"type": "tool_result", "tool_use_id": block.id, "content": "Permission denied"})
+                    continue
                 handler = TOOL_HANDLERS.get(block.name)
                 if handler is None:
                     output = f"Unknown tool: {block.name}"
